@@ -1,0 +1,59 @@
+name: OpenShorts Clipper
+
+# Runs the open-source OpenShorts pipeline (https://github.com/mutonby/openshorts)
+# as a batch job: no PC, no always-on server. Triggered by the Shorts Clipper
+# app through workflow_dispatch. Finished clips land in the run's Artifacts;
+# download them there and upload them into the app to finish the job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Source video URL (the client authorized this link)"
+        required: true
+        type: string
+      job_id:
+        description: "Shorts Clipper job ID"
+        required: true
+        type: string
+
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Clone OpenShorts
+        run: git clone --depth 1 https://github.com/mutonby/openshorts.git openshorts
+
+      - name: Start OpenShorts
+        working-directory: openshorts
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:5175 >/dev/null && break || sleep 10
+          done
+
+      - name: Process video
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+        run: |
+          # OpenShorts REST ingest. If your OpenShorts version names this
+          # route differently, adjust this one step to match its README.
+          curl -sf -X POST http://localhost:8000/api/process \\
+            -H "Content-Type: application/json" \\
+            -d "{\\"url\\": \\"$VIDEO_URL\\"}"
+
+      - name: Collect clips
+        run: |
+          mkdir -p out
+          find openshorts -type f -name "*.mp4" -newer openshorts/README.md -exec cp {} out/ \\; || true
+          ls -la out
+
+      - name: Upload clips as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clips-job-${{ inputs.job_id }}
+          path: out/
+          if-no-files-found: warn
